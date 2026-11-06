@@ -297,6 +297,7 @@ impl Render for TerminalPicker {
 pub fn open(
     rows: Vec<TerminalRow>,
     selected: String,
+    title: SharedString,
     window: &mut Window,
     cx: &mut App,
     choose: impl Fn(TerminalRow, &mut Window, &mut App) + 'static,
@@ -308,7 +309,7 @@ pub fn open(
             picker.read(cx).query.focus_handle(cx).focus(window, cx);
         }
         let width = to_px(900., window).min(window.viewport_size().width - px(48.));
-        dialog.title("选择目标终端").w(width).keyboard(true).overlay_closable(true).child(picker.clone())
+        dialog.title(title.clone()).w(width).keyboard(true).overlay_closable(true).child(picker.clone())
     });
 }
 

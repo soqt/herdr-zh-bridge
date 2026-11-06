@@ -18,12 +18,11 @@ mod shots {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use gpui::{AnyWindowHandle, AppContext, Entity, VisualTestAppContext, px, size};
+    use gpui::{AnyWindowHandle, AppContext, Entity, Modifiers, MouseButton, VisualTestAppContext, point, px, size};
     use gpui_component::Root;
-    use herdr_zh_bridge::core::catalog::terminal_catalog;
-    use herdr_zh_bridge::core::prefs::Preferences;
+    use herdr_zh_bridge::core::catalog::Catalog;
+    use herdr_zh_bridge::core::prefs::{Axis, TabPrefs, Tree};
     use herdr_zh_bridge::ui::{self, Backend, Settings, preview, workspace::Workspace};
-    use serde_json::json;
 
     fn settings(zoom: f32) -> Settings {
         Settings { hc: "hc".into(), codex: "codex".into(), herdr: "herdr-app".into(), zoom, preview: true }
@@ -33,7 +32,7 @@ mod shots {
         cx: &mut VisualTestAppContext,
         width: f32,
         height: f32,
-        prefs: Preferences,
+        prefs: herdr_zh_bridge::core::prefs::Preferences,
         demo: bool,
     ) -> (AnyWindowHandle, Entity<Workspace>) {
         let mut workspace = None;
@@ -84,51 +83,37 @@ mod shots {
         }
     }
 
-    fn demo_rows() -> Vec<herdr_zh_bridge::core::catalog::TerminalRow> {
-        let world = json!({"spaces": [
-            {"id": "s1", "name": "herdr-zh-bridge", "machine": null, "folder": "/Users/demo/herdr-zh-bridge", "tabs": [
-                {"id": "tab1", "name": "开发", "terminals": [{"terminal": "t1", "sub_agents": ["t2"]}, {"terminal": "t3"}]}]},
-            {"id": "remote/s1", "name": "api-server", "machine": "build-box", "folder": "/srv/api", "tabs": [
-                {"id": "remote/tab1", "name": "部署", "terminals": [{"terminal": "build-box/t1"}]}]}
-        ]});
-        let records = vec![
-            json!({"address": "t1", "name": "Codex", "cwd": "/Users/demo/herdr-zh-bridge", "status": {"state": "idle", "app": "codex"}, "turn": 4}),
-            json!({"address": "t2", "name": "Reviewer", "parent": "t1", "status": "working"}),
-            json!({"address": "t3", "name": "Claude", "agent": "claude", "cwd": "/Users/demo/herdr-zh-bridge", "status": "idle"}),
-            json!({"address": "build-box/t1", "name": "Grok", "cwd": "/srv/api", "status": "done"}),
-            json!({"address": "t9", "agent": "zsh", "cwd": "/Users/demo", "state": "live"}),
-        ];
-        terminal_catalog(&records, &world)
-    }
-
     pub fn main() {
         let folder = PathBuf::from(std::env::args().nth(1).unwrap_or_else(|| "/tmp/herdr-zh-bridge-shots".into()));
         std::fs::create_dir_all(&folder).unwrap();
-        let mut cx = VisualTestAppContext::with_asset_source(
-            gpui_platform::current_platform(false),
-            Arc::new(gpui_kit_assets::Assets),
-        );
+        let mut cx =
+            VisualTestAppContext::with_asset_source(gpui_platform::current_platform(false), Arc::new(ui::Assets));
         cx.update(|cx| ui::init(settings(1.0), Backend::system(), cx));
 
         let (window, _) = open(&mut cx, 1080., 760., preview::preferences(), true);
-        shot(&mut cx, window, &folder, "01-split");
+        shot(&mut cx, window, &folder, "01-spaces");
 
-        let mut single = preview::preferences();
-        single.tabs.truncate(1);
-        single.tabs[0].target.clear();
-        single.tabs[0].name.clear();
-        single.split = false;
-        let (window, _) = open(&mut cx, 900., 620., single, false);
+        // A Herdr space without conversations lists its terminals.
+        let (window, workspace) = open(&mut cx, 900., 620., preview::preferences(), true);
+        cx.update_window(window, |_, window, cx| {
+            workspace.update(cx, |w, cx| {
+                let playground = w.spaces().iter().find(|s| s.name == "playground").unwrap().id;
+                w.select_space(playground, window, cx);
+            })
+        })
+        .unwrap();
         shot(&mut cx, window, &folder, "02-empty");
 
         let mut many = preview::preferences();
-        many.split = false;
-        for i in 4..14 {
-            let mut tab = many.tabs[0].clone();
+        let mut tabs: Vec<TabPrefs> = many.tabs().into_iter().cloned().collect();
+        for i in 7..17 {
+            let mut tab = tabs[0].clone();
             tab.target = format!("t{i}");
             tab.name = format!("会话 {i} · 一个很长的终端名称 / project / feature");
-            many.tabs.push(tab);
+            tabs.push(tab);
         }
+        many.spaces.truncate(1);
+        many.spaces[0].layout = Some(Tree::pane(tabs));
         let (window, workspace) = open(&mut cx, 1080., 640., many, true);
         shot(&mut cx, window, &folder, "03-overflow");
         cx.update_window(window, |_, window, cx| {
@@ -140,12 +125,12 @@ mod shots {
         .unwrap();
         shot(&mut cx, window, &folder, "04-overflow-last");
 
+        // The + of a space offers that space's terminals.
         let (window, workspace) = open(&mut cx, 1080., 760., preview::preferences(), true);
         cx.update_window(window, |_, window, cx| {
             workspace.update(cx, |w, cx| {
-                w.apply_targets(demo_rows(), cx);
-                let first = w.layout().order()[1];
-                w.open_picker(first, window, cx);
+                let first = w.spaces()[0].id;
+                w.add_session(first, window, cx);
             })
         })
         .unwrap();
@@ -181,6 +166,54 @@ mod shots {
 
         let (window, _) = open(&mut cx, 700., 600., preview::preferences(), true);
         shot(&mut cx, window, &folder, "08-narrow-zoom-130");
+        let mut rail = preview::preferences();
+        rail.sidebar_collapsed = true;
+        let (window, _) = open(&mut cx, 700., 600., rail, true);
+        shot(&mut cx, window, &folder, "08b-narrow-rail-zoom-130");
+
+        cx.update(|cx| {
+            cx.global_mut::<Settings>().zoom = 1.0;
+            ui::theme::set_zoom(1.0, cx);
+        });
+        // Four terminals on one screen.
+        let mut grid = preview::preferences();
+        let cell =
+            |t: &str, n: &str| Tree::pane(vec![TabPrefs { target: t.into(), name: n.into(), ..Default::default() }]);
+        let column = |a, b| Tree::Split { axis: Axis::Column, children: vec![(0.5, a), (0.5, b)] };
+        grid.spaces[0].layout = Some(Tree::Split {
+            axis: Axis::Row,
+            children: vec![
+                (0.5, column(cell("preview-one", "Codex · 界面设计"), cell("g2", "Claude · 代码审查"))),
+                (0.5, column(cell("preview-three", "Grok · API 文档"), cell("g4", "Codex · 测试"))),
+            ],
+        });
+        let (window, _) = open(&mut cx, 1280., 860., grid, true);
+        shot(&mut cx, window, &folder, "10-grid");
+
+        // A tab dragged to the lower edge of its pane, over the split preview.
+        let (window, _) = open(&mut cx, 1080., 760., preview::preferences(), true);
+        let start = point(px(305.), px(31.));
+        cx.simulate_mouse_down(window, start, MouseButton::Left, Modifiers::default());
+        for to in [point(px(330.), px(31.)), point(px(420.), px(690.)), point(px(421.), px(690.))] {
+            cx.simulate_mouse_move(window, to, MouseButton::Left, Modifiers::default());
+        }
+        shot(&mut cx, window, &folder, "11-drag-split");
+        cx.simulate_mouse_up(window, point(px(421.), px(690.)), MouseButton::Left, Modifiers::default());
+        settle(&mut cx);
+
+        // A folded machine, and a space Herdr closed while it had a conversation.
+        let (window, workspace) = open(&mut cx, 1080., 760., preview::preferences(), true);
+        cx.update_window(window, |_, window, cx| {
+            workspace.update(cx, |w, cx| {
+                w.toggle_group("machine:build-box", cx);
+                let mut catalog: Catalog = preview::catalog();
+                catalog.spaces.as_mut().unwrap().retain(|s| s.name != "文档");
+                catalog.rows.retain(|r| r.space() != Some("s2"));
+                w.apply_catalog(catalog, window, cx);
+            })
+        })
+        .unwrap();
+        shot(&mut cx, window, &folder, "12-folded-and-closed");
     }
 
     fn write_bmp(path: &Path, w: u32, h: u32, rgba: &[u8]) {

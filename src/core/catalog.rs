@@ -11,9 +11,9 @@ use indexmap::IndexMap;
 use serde_json::{Value, json};
 
 use super::error::{BridgeError, Result};
-use super::herdr::{Terminals, own_terminal, status, unwrap};
+use super::herdr::{Terminals, own_terminal, status};
 use super::platform::executable;
-use super::process::{RunRequest, command, run};
+use super::process::command;
 use super::text::{first_text, truthy, value_text};
 use super::translator::codex_argv;
 
@@ -51,6 +51,11 @@ pub struct TerminalRow {
 }
 
 impl TerminalRow {
+    /// The id of the Herdr space this terminal is laid out in.
+    pub fn space(&self) -> Option<&str> {
+        self.groups.iter().find_map(|(key, _)| key.strip_prefix("space:"))
+    }
+
     /// Case-insensitive search over every field, including the raw records.
     pub fn matches(&self, query: &str) -> bool {
         let query = query.trim().to_lowercase();
@@ -186,29 +191,73 @@ pub fn terminal_catalog(records: &[Value], world: &Value) -> Vec<TerminalRow> {
     builder.rows
 }
 
+/// One space of Herdr's window.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HerdrSpace {
+    /// Herdr's id; a remote space's starts with its machine.
+    pub id: String,
+    pub name: String,
+    /// `None` is this computer.
+    pub machine: Option<String>,
+}
+
+/// The last component of a path-like label, which is how Herdr names a
+/// space after its folder.
+fn short_name(label: &str) -> &str {
+    let path = label.starts_with(['/', '\\']) || label.get(1..3) == Some(":\\");
+    if !path {
+        return label.trim();
+    }
+    let trimmed = label.trim_end_matches(['/', '\\']);
+    trimmed.rsplit(['/', '\\']).next().unwrap_or(trimmed).trim()
+}
+
+/// Herdr's spaces in window order.
+pub fn herdr_spaces(world: &Value) -> Vec<HerdrSpace> {
+    let mut seen = HashSet::new();
+    let spaces = world.get("spaces").and_then(Value::as_array).into_iter().flatten();
+    spaces
+        .filter_map(|space| {
+            let id = value_text(space.get("id").unwrap_or(&Value::Null));
+            if id.is_empty() || !seen.insert(id.clone()) {
+                return None;
+            }
+            let name = first_text([space.get("name"), space.get("folder")]).unwrap_or_default();
+            let name = Some(short_name(&name)).filter(|n| !n.is_empty()).unwrap_or("未命名空间").to_string();
+            Some(HerdrSpace { id, name, machine: first_text([space.get("machine")]) })
+        })
+        .collect()
+}
+
+/// Terminals and, when Herdr's window answered, its spaces.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Catalog {
+    pub rows: Vec<TerminalRow>,
+    /// `None` when the layout could not be read; terminals are still listed.
+    pub spaces: Option<Vec<HerdrSpace>>,
+    pub warning: String,
+}
+
 /// Lists terminals with Herdr's layout, minus the one running this bridge.
 /// A layout failure only adds a warning.
-pub fn load_terminals(core: &dyn Terminals, app_binary: &str) -> Result<(Vec<TerminalRow>, String)> {
+pub fn load_terminals(core: &dyn Terminals, app_binary: &str) -> Result<Catalog> {
     let records = core.terminals()?;
-    let world = run(&RunRequest::new(vec![executable(app_binary), "ls".into()], 30))
-        .and_then(|text| unwrap(&text))
-        .and_then(|world| {
-            if world.get("spaces").is_some_and(Value::is_array) {
-                Ok(world)
-            } else {
-                Err(BridgeError::new("Herdr 布局返回格式不符"))
-            }
-        });
-    let (mut rows, warning) = match world {
-        Ok(world) => (terminal_catalog(&records, &world), String::new()),
-        Err(error) => {
-            (terminal_catalog(&records, &json!({})), format!("暂时无法读取 Herdr 布局，终端仍完整列出：{error}"))
-        }
+    let mut catalog = match core.layout(app_binary) {
+        Ok(world) => Catalog {
+            rows: terminal_catalog(&records, &world),
+            spaces: Some(herdr_spaces(&world)),
+            warning: String::new(),
+        },
+        Err(error) => Catalog {
+            rows: terminal_catalog(&records, &json!({})),
+            spaces: None,
+            warning: format!("暂时无法读取 Herdr 布局，终端仍完整列出：{error}"),
+        },
     };
     if let Some(own) = own_terminal() {
-        rows.retain(|row| row.address != own);
+        catalog.rows.retain(|row| row.address != own);
     }
-    Ok((rows, warning))
+    Ok(catalog)
 }
 
 const TIMEOUT: &str = "查询模型超时；可以手动输入模型 ID。";
@@ -360,6 +409,25 @@ pub(crate) mod tests {
         assert_eq!(rows[0].app, "codex");
         assert_eq!(rows[1].status, "working");
         assert!(rows.last().unwrap().groups.last().unwrap().1.contains("未关联"));
+    }
+
+    #[test]
+    fn spaces_in_window_order_with_their_terminals() {
+        let mut world = world();
+        world["spaces"].as_array_mut().unwrap().push(json!({"id": "s3", "name": "", "folder": "/work/Notes/"}));
+        world["spaces"].as_array_mut().unwrap().push(json!({"id": "s1", "name": "duplicate"}));
+        let spaces = herdr_spaces(&world);
+        let names: Vec<(&str, &str, Option<&str>)> =
+            spaces.iter().map(|s| (s.id.as_str(), s.name.as_str(), s.machine.as_deref())).collect();
+        assert_eq!(
+            names,
+            [("s1", "DemoProject", None), ("remote/s1", "DemoProject", Some("remote")), ("s3", "Notes", None)]
+        );
+        let rows = terminal_catalog(&records(), &world);
+        let homes: Vec<Option<&str>> = rows.iter().map(TerminalRow::space).collect();
+        // A sub-agent lives in its parent's space; an unmapped terminal in none.
+        assert_eq!(homes, [Some("s1"), Some("s1"), Some("s1"), Some("remote/s1"), None]);
+        assert!(herdr_spaces(&json!({})).is_empty());
     }
 
     #[test]

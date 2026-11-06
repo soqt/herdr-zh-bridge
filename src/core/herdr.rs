@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use super::error::{BridgeError, Result};
 use super::platform::executable;
-use super::process::{RunRequest, Runner, system_runner};
+use super::process::{RunRequest, Runner, run, system_runner};
 use super::text::{is_blank, truthy, value_text};
 
 /// Decodes a JSON reply, surfacing `{"error": ...}` and unwrapping `{"result": ...}`.
@@ -68,6 +68,16 @@ pub trait Terminals: Send {
         self.read(address)
     }
     fn send(&self, address: &str, text: &str) -> Result<()>;
+    /// Herdr's spaces, tabs and terminals as its window arranges them
+    /// (`herdr-app ls`). Read-only.
+    fn layout(&self, app_binary: &str) -> Result<Value> {
+        let world = unwrap(&run(&RunRequest::new(vec![executable(app_binary), "ls".into()], 30))?)?;
+        if world.get("spaces").is_some_and(Value::is_array) {
+            Ok(world)
+        } else {
+            Err(BridgeError::new("Herdr 布局返回格式不符"))
+        }
+    }
 }
 
 pub struct Core {

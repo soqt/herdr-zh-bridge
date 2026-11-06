@@ -27,7 +27,7 @@ use super::layout::TabId;
 use super::models::ModelChoices;
 use super::theme::{ACCENT, BORDER, ERROR, FAINT, FIELD, FOCUS, MUTED, TEXT, WARNING, color, hover_frame, u};
 use super::{Backend, COMPOSER_CONTEXT, SendMessage, Settings, send_hint};
-use crate::core::catalog::{TerminalRow, list_models, load_terminals};
+use crate::core::catalog::{TerminalRow, list_models};
 use crate::core::error::{BridgeError, Result};
 use crate::core::prefs::TabPrefs;
 use crate::core::session::{CHINESE_PREFIX, LATEST_CHINESE_PREFIX, Poll, Session, TURN_CONTINUES, TURN_DONE, Turns};
@@ -80,9 +80,9 @@ enum Message {
 #[derive(Clone, Debug)]
 pub enum PaneEvent {
     Activated,
+    /// Choose this conversation's terminal, from a freshly read catalog.
     OpenPicker,
     SavePreferences,
-    TargetsLoaded { rows: Vec<TerminalRow>, open_after: bool },
     ModelsLoaded(Vec<Value>),
 }
 
@@ -238,7 +238,6 @@ pub struct ConversationPane {
     /// Tracking jobs queued or running; `polling` when one is automatic.
     pub tracking: usize,
     pub polling: bool,
-    loading_targets: bool,
     loading_models: bool,
     pub auto_paused: bool,
     pub unread: bool,
@@ -301,7 +300,6 @@ impl ConversationPane {
             sending: 0,
             tracking: 0,
             polling: false,
-            loading_targets: false,
             loading_models: false,
             auto_paused: false,
             unread: false,
@@ -402,13 +400,12 @@ impl ConversationPane {
         if status.is_empty() { title } else { format!("{title} · {status}") }
     }
 
-    pub fn preferences(&self, group: usize) -> TabPrefs {
+    pub fn preferences(&self) -> TabPrefs {
         TabPrefs {
             target: self.target.clone(),
             name: self.target_name.clone(),
             model: self.models.slug(),
             effort: self.models.effort_value(),
-            group,
         }
     }
 
@@ -745,38 +742,6 @@ impl ConversationPane {
         cx.notify();
     }
 
-    /// Loads the terminal catalog beside the workers, so it never waits for them.
-    pub fn list_targets(&mut self, open_after: bool, cx: &mut Context<Self>) {
-        if self.loading_targets || self.disposed || cx.global::<Settings>().preview {
-            return;
-        }
-        self.loading_targets = true;
-        let mut session = (cx.global::<Backend>().0)();
-        self.config(cx).apply(&mut session);
-        let herdr = strip(&cx.global::<Settings>().herdr).to_string();
-        let load = cx.background_spawn(async move { load_terminals(session.core.as_ref(), &herdr) });
-        cx.spawn(async move |this, cx| {
-            let result = load.await;
-            let _ = this.update(cx, |pane, cx| {
-                pane.loading_targets = false;
-                if pane.disposed {
-                    return;
-                }
-                match result {
-                    Ok((rows, warning)) => {
-                        if !warning.is_empty() {
-                            pane.log(warning);
-                        }
-                        cx.emit(PaneEvent::TargetsLoaded { rows, open_after });
-                    }
-                    Err(error) => pane.show_error(None, error.message().to_string()),
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
     pub fn refresh_models(&mut self, cx: &mut Context<Self>) {
         if self.loading_models || self.disposed || cx.global::<Settings>().preview {
             return;
@@ -986,8 +951,7 @@ impl ConversationPane {
                                 .disabled(!enabled)
                                 .on_click(move |_, _, cx| entity.update(cx, action))
                         };
-                    // Reloads the catalog first, so new Herdr terminals appear.
-                    menu.item(item("选择终端", !locked, |this, cx| this.list_targets(true, cx)))
+                    menu.item(item("选择终端", !locked, |_, cx| cx.emit(PaneEvent::OpenPicker)))
                         .item(item("回译最新回答", !translating, Self::current_screen))
                         .item(item("仅回译输入", !translating, Self::manual))
                         .separator()
