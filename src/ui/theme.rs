@@ -1,7 +1,10 @@
 //! Neutral dark palette and zoom. Every dimension is in rems, so the font
 //! size setting scales the whole interface; fixed sizes stay fixed per zoom.
 
-use gpui::{App, Hsla, Pixels, Rems, Window, px, rems, rgb};
+use gpui::{
+    App, Div, ElementId, Hsla, InteractiveElement, Pixels, Rems, Stateful, StatefulInteractiveElement, Styled, Window,
+    div, px, rems, rgb,
+};
 use gpui_component::{Theme, ThemeMode};
 
 use crate::core::platform::font_families;
@@ -23,6 +26,17 @@ pub fn color(hex: u32) -> Hsla {
     rgb(hex).into()
 }
 
+/// Outline buttons hover too faintly on this palette; their face is
+/// translucent, so this frame's fill shows through it on hover and press.
+pub fn hover_frame(id: impl Into<ElementId>) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex_shrink_0()
+        .rounded(px(6.))
+        .hover(|s| s.bg(color(CONTROL_HOVER).opacity(0.5)))
+        .active(|s| s.bg(color(CONTROL_PRESSED)))
+}
+
 pub const BG: u32 = 0x101113;
 pub const CARD: u32 = 0x181a1d;
 pub const FIELD: u32 = 0x202328;
@@ -35,6 +49,11 @@ pub const ACCENT_TEXT: u32 = 0x141827;
 pub const SELECTION: u32 = 0x343d5d;
 pub const SELECTED: u32 = 0x272b32;
 pub const HOVER: u32 = 0x202329;
+/// Hover and pressed fills for buttons, menu items and rows; visible on BG,
+/// CARD and FIELD alike.
+pub const CONTROL_HOVER: u32 = 0x3a3f48;
+pub const CONTROL_PRESSED: u32 = 0x4a505b;
+pub const SCROLL_THUMB: u32 = 0x4a505b;
 pub const FOCUS: u32 = 0x626d88;
 pub const ERROR: u32 = 0xee9696;
 pub const WARNING: u32 = 0xd6b47a;
@@ -50,7 +69,9 @@ pub fn apply(zoom: f32, cx: &mut App) {
         t.border = color(BORDER);
         t.muted = color(FIELD);
         t.muted_foreground = color(MUTED);
-        t.accent = color(HOVER);
+        // Ghost buttons hover with half of `accent`; menu items with all of it.
+        t.accent = color(CONTROL_HOVER);
+        t.button_active = color(CONTROL_PRESSED);
         t.accent_foreground = color(TEXT);
         t.primary = color(ACCENT);
         t.primary_hover = color(0xb2bdff);
@@ -70,13 +91,13 @@ pub fn apply(zoom: f32, cx: &mut App) {
         t.selection = color(SELECTION);
         t.popover = color(FIELD);
         t.popover_foreground = color(TEXT);
-        t.list_hover = color(SELECTED);
+        t.list_hover = color(CONTROL_HOVER);
         t.list_active = color(SELECTION);
         t.list_active_border = color(SELECTION);
         t.drop_target = color(SELECTION).opacity(0.6);
         t.drag_border = color(ACCENT);
         t.scrollbar = color(CARD).opacity(0.0);
-        t.scrollbar_thumb = color(BORDER);
+        t.scrollbar_thumb = color(SCROLL_THUMB);
         t.scrollbar_thumb_hover = color(FOCUS);
         t.overlay = color(0x000000).opacity(0.45);
         t.font_family = family.into();

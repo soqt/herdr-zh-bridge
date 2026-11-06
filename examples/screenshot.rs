@@ -155,24 +155,22 @@ mod shots {
         cx.update_window(window, |_, window, cx| workspace.update(cx, |w, cx| w.open_settings(window, cx))).unwrap();
         shot(&mut cx, window, &folder, "06-settings");
 
-        // An opened activity log shows its newest entries.
+        // Activity logs are open at a fixed height and show their newest entries.
         let (window, workspace) = open(&mut cx, 1080., 760., preview::preferences(), true);
         cx.update_window(window, |_, _, cx| {
             let pane = workspace.read(cx).pane(workspace.read(cx).layout().order()[0]).unwrap().clone();
-            pane.update(cx, |pane, cx| {
-                let screen: String = (1..=80).map(|i| format!("{i:>3} │ terminal output line\n")).collect();
+            pane.update(cx, |pane, _| {
+                let screen: String = (1..=300).map(|i| format!("{i:>3} │ terminal output line\n")).collect();
                 let raw = format!("终端原始内容（仅供核对，不作为回答回译）：\n{screen}");
                 pane.add_demo(
                     "再检查一遍日志。",
                     &["英文译文：\nCheck the log again.", &raw, "最后一条：已完成"],
                     None,
                 );
-                let last = pane.items.len() - 1;
-                pane.toggle_log(last, cx);
             });
         })
         .unwrap();
-        shot(&mut cx, window, &folder, "09-log-open");
+        shot(&mut cx, window, &folder, "09-logs");
 
         cx.update(|cx| {
             cx.global_mut::<Settings>().zoom = 1.3;

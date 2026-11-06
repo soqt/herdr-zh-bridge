@@ -13,7 +13,7 @@ use gpui_component::{
 };
 
 use super::Settings;
-use super::theme::{self, MUTED, color, u};
+use super::theme::{self, MUTED, color, hover_frame, u};
 use super::workspace::Workspace;
 use crate::core::prefs::ZOOM_LEVELS;
 
@@ -92,11 +92,16 @@ impl Render for SettingsPanel {
                     .map(|(label, _, input)| row(label).child(div().flex_1().min_w_0().child(Input::new(input)))),
             )
             .child(row("字号").children(ZOOM_LEVELS.into_iter().map(|level| {
-                let button = Button::new(("zoom", (level * 100.) as usize))
+                let id = (level * 100.) as usize;
+                let button = Button::new(("zoom", id))
                     .small()
                     .label(format!("{}%", (level * 100.).round()))
                     .on_click(cx.listener(move |this, _, _, cx| this.set_zoom(level, cx)));
-                if (level - zoom).abs() < 0.01 { button.primary() } else { button.outline() }
+                if (level - zoom).abs() < 0.01 {
+                    button.primary().into_any_element()
+                } else {
+                    hover_frame(("zoom-frame", id)).child(button.outline()).into_any_element()
+                }
             })))
             .child(
                 div()

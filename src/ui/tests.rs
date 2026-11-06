@@ -6,7 +6,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use gpui::{
-    AppContext, Bounds, Entity, Modifiers, MouseButton, Pixels, TestAppContext, VisualTestContext, point, px, size,
+    AppContext, Bounds, Entity, Modifiers, MouseButton, Pixels, ScrollDelta, ScrollEvent, TestAppContext,
+    VisualTestContext, point, px, size,
 };
 use gpui_component::Root;
 use serde_json::{Value, json};
@@ -327,7 +328,7 @@ fn concurrent_round_trips_stay_with_their_tab(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn logs_are_collapsed_and_skip_success_notices(cx: &mut TestAppContext) {
+fn logs_are_open_and_skip_success_notices(cx: &mut TestAppContext) {
     let mut h = open(cx, tabs(&["t1"]), None, world(&["t1"]));
     h.on_pane(0, |p, window, cx| {
         p.set_draft("你好", window, cx);
@@ -338,7 +339,7 @@ fn logs_are_collapsed_and_skip_success_notices(cx: &mut TestAppContext) {
     let logs = h.logs(0);
     assert_eq!(logs.len(), 1);
     let (entries, expanded) = &logs[0];
-    assert!(!expanded);
+    assert!(expanded);
     assert!(entries.iter().any(|e| e.contains("English 你好")));
     assert!(!entries.iter().any(|e| e.contains("本轮已完成")));
     assert!(!h.chat(0).iter().any(|(_, t)| t.contains("English")));
@@ -420,22 +421,94 @@ fn messages_send_while_replies_are_pending_and_resolve_in_order(cx: &mut TestApp
     assert_eq!(h.workspace.read_with(h.cx, |w, _| w.layout().len()), 1);
 }
 
+fn log_scroll(h: &mut Harness, index: usize) -> (Pixels, Pixels) {
+    h.pane(0).read_with(h.cx, |p, _| match &p.items[index] {
+        ChatItem::Log { scroll, .. } => (scroll.offset().y, scroll.max_offset().y),
+        _ => unreachable!(),
+    })
+}
+
+fn log_indices(h: &mut Harness) -> Vec<usize> {
+    h.pane(0).read_with(h.cx, |p, _| {
+        p.items.iter().enumerate().filter(|(_, i)| matches!(i, ChatItem::Log { .. })).map(|(i, _)| i).collect()
+    })
+}
+
 #[gpui::test]
-fn opening_a_log_shows_its_newest_entries(cx: &mut TestAppContext) {
+fn logs_keep_a_fixed_height_and_follow_new_entries(cx: &mut TestAppContext) {
     let mut h = open(cx, tabs(&["t1"]), None, world(&["t1"]));
     let entries: Vec<String> = (0..60).map(|i| format!("entry {i}")).collect();
     let entries: Vec<&str> = entries.iter().map(String::as_str).collect();
-    h.on_pane(0, |p, _, _| p.add_demo("问题", &entries, Some("回答")));
-    let index =
-        h.pane(0).read_with(h.cx, |p, _| p.items.iter().position(|i| matches!(i, ChatItem::Log { .. })).unwrap());
-    h.on_pane(0, |p, _, cx| p.toggle_log(index, cx));
-    h.draw();
-    let (offset, max) = h.pane(0).read_with(h.cx, |p, _| match &p.items[index] {
-        ChatItem::Log { scroll, expanded: true, .. } => (scroll.offset().y, scroll.max_offset().y),
-        _ => unreachable!(),
+    h.on_pane(0, |p, _, _| {
+        p.add_demo("短", &["one line"], None);
+        p.add_demo("长", &entries, None);
     });
-    assert!(max > px(0.));
+    let [short, long] = log_indices(&mut h)[..] else { panic!() };
+    let height = |h: &mut Harness, index: usize| h.bounds(&format!("log-{index}")).size.height;
+    assert_eq!(height(&mut h, short), height(&mut h, long));
+    let (offset, max) = log_scroll(&mut h, long);
+    assert!(max > px(0.) && offset == -max);
+
+    let before = height(&mut h, long);
+    h.on_pane(0, |p, _, _| (0..20).for_each(|i| p.log_to(long, format!("more {i}"))));
+    h.draw();
+    let (offset, grown) = log_scroll(&mut h, long);
+    assert_eq!(height(&mut h, long), before);
+    assert!(grown > max && offset == -grown);
+
+    // Scrolled back, the log stays put; reopened, it shows the end again.
+    h.on_pane(0, |p, _, _| {
+        if let ChatItem::Log { scroll, .. } = &p.items[long] {
+            scroll.set_offset(point(px(0.), px(0.)));
+        }
+        p.log_to(long, "later".into());
+    });
+    h.draw();
+    assert_eq!(log_scroll(&mut h, long).0, px(0.));
+    h.on_pane(0, |p, _, cx| {
+        p.toggle_log(long, cx);
+        p.toggle_log(long, cx);
+    });
+    h.draw();
+    let (offset, max) = log_scroll(&mut h, long);
     assert_eq!(offset, -max);
+}
+
+#[gpui::test]
+fn the_wheel_scrolls_a_log_first_then_the_chat(cx: &mut TestAppContext) {
+    let mut h = open(cx, tabs(&["t1"]), None, world(&["t1"]));
+    let entries: Vec<String> = (0..60).map(|i| format!("entry {i}")).collect();
+    let entries: Vec<&str> = entries.iter().map(String::as_str).collect();
+    h.on_pane(0, |p, _, _| {
+        for i in 0..3 {
+            p.add_demo(&format!("问题 {i}"), &entries, Some("回答"));
+        }
+    });
+    let log = *log_indices(&mut h).last().unwrap();
+    let wheel = |h: &mut Harness, dy: f32| {
+        let at = h.bounds(&format!("log-{log}")).center();
+        h.cx.simulate_event(ScrollEvent {
+            position: at,
+            delta: ScrollDelta::Pixels(point(px(0.), px(dy))),
+            ..Default::default()
+        });
+        h.draw();
+    };
+    let top = |h: &mut Harness| h.bounds(&format!("log-{log}")).top();
+
+    let (chat_before, (log_before, _)) = (top(&mut h), log_scroll(&mut h, log));
+    wheel(&mut h, 60.);
+    assert!(log_scroll(&mut h, log).0 > log_before);
+    assert_eq!(top(&mut h), chat_before);
+
+    h.on_pane(0, |p, _, _| {
+        if let ChatItem::Log { scroll, .. } = &p.items[log] {
+            scroll.set_offset(point(px(0.), px(0.)));
+        }
+    });
+    h.draw();
+    wheel(&mut h, 60.);
+    assert!(top(&mut h) > chat_before);
 }
 
 #[gpui::test]

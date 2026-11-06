@@ -22,7 +22,10 @@ use serde_json::Value;
 
 use super::conversation::{ConversationPane, PaneEvent, TabStatus};
 use super::layout::{DropTarget, Layout, TabId};
-use super::theme::{ACCENT, BG, BORDER, CARD, FOCUS, HOVER, MUTED, SELECTED, SELECTION, TEXT, color, to_px, u};
+use super::theme::{
+    ACCENT, BG, BORDER, CARD, CONTROL_HOVER, CONTROL_PRESSED, FOCUS, HOVER, MUTED, SELECTED, SELECTION, TEXT, color,
+    to_px, u,
+};
 use super::{CancelDrag, CloseTab, NewTab, NextTab, OpenSettings, Settings, WORKSPACE_CONTEXT, picker, settings};
 use crate::core::catalog::TerminalRow;
 use crate::core::prefs::{self, Preferences, TabPrefs};
@@ -644,7 +647,8 @@ impl Workspace {
             .text_color(color(if closable { MUTED } else { BORDER }))
             .child("×")
             .when(closable, |this| {
-                this.hover(|s| s.bg(color(HOVER)).text_color(color(TEXT)))
+                this.hover(|s| s.bg(color(CONTROL_HOVER).opacity(0.5)).text_color(color(TEXT)))
+                    .active(|s| s.bg(color(CONTROL_PRESSED)))
                     .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(move |this, _, window, cx| {
                         cx.stop_propagation();
@@ -663,7 +667,10 @@ impl Workspace {
                 .border_1()
                 .border_color(color(if selected { BORDER } else { BG }))
                 .bg(color(if selected { SELECTED } else { BG }))
-                .when(!selected, |this| this.hover(|s| s.bg(color(HOVER)).border_color(color(HOVER))))
+                .when(!selected, |this| {
+                    this.hover(|s| s.bg(color(HOVER)).border_color(color(HOVER)))
+                        .active(|s| s.bg(color(SELECTED)).border_color(color(BORDER)))
+                })
                 .cursor_pointer()
                 .child(div().flex_shrink_0().size(u(6)).rounded_full().bg(color(status.color())))
                 .child(
@@ -751,7 +758,8 @@ impl Workspace {
                             .justify_center()
                             .text_size(u(17))
                             .text_color(color(MUTED))
-                            .hover(|s| s.bg(color(HOVER)).text_color(color(TEXT)))
+                            .hover(|s| s.bg(color(CONTROL_HOVER).opacity(0.5)).text_color(color(TEXT)))
+                            .active(|s| s.bg(color(CONTROL_PRESSED)))
                             .child("+")
                             .tooltip(|window, cx| Tooltip::new("新建终端会话").build(window, cx))
                             .on_click(cx.listener(move |this, _, window, cx| {

@@ -2,13 +2,14 @@
 //! worker, so a new message never waits for an earlier reply and polling
 //! never delays a send. Workers and messages never follow UI focus.
 
+use std::borrow::Cow;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::time::Duration;
 
 use gpui::{
     AnyElement, App, AppContext, Context, Entity, EventEmitter, Focusable, FontWeight, InteractiveElement, IntoElement,
-    ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Subscription, Task, Window,
-    div, prelude::FluentBuilder, px, relative,
+    ParentElement, Render, ScrollEvent, ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Subscription,
+    Task, Window, div, prelude::FluentBuilder, px, relative,
 };
 use gpui_base::SelectableText;
 use gpui_component::{
@@ -17,14 +18,14 @@ use gpui_component::{
     h_flex,
     input::{Input, InputEvent, InputState, Textarea, TextareaState},
     menu::{DropdownMenu, PopupMenuItem},
-    scroll::ScrollableElement,
+    scroll::{ScrollableElement, Scrollbar, ScrollbarMode},
     v_flex,
 };
 use serde_json::Value;
 
 use super::layout::TabId;
 use super::models::ModelChoices;
-use super::theme::{ACCENT, BORDER, ERROR, FAINT, FIELD, FOCUS, MUTED, TEXT, WARNING, color, u};
+use super::theme::{ACCENT, BORDER, ERROR, FAINT, FIELD, FOCUS, MUTED, TEXT, WARNING, color, hover_frame, u};
 use super::{Backend, COMPOSER_CONTEXT, SendMessage, Settings, send_hint};
 use crate::core::catalog::{TerminalRow, list_models, load_terminals};
 use crate::core::error::{BridgeError, Result};
@@ -46,9 +47,12 @@ pub enum ChatItem {
         role: Role,
         text: SharedString,
     },
-    /// A collapsed record of one round: sent English, raw screen, errors.
+    /// One round's activity: sent English, raw screen, errors. Open by
+    /// default, at a fixed height that scrolls inside.
     Log {
         entries: Vec<String>,
+        /// What the log shows: the entries as short selectable runs.
+        runs: Vec<SharedString>,
         expanded: bool,
         scroll: ScrollHandle,
     },
@@ -187,6 +191,36 @@ pub fn selectable_runs(text: &str) -> Vec<&str> {
         _ => runs.push((start, text.len())),
     }
     runs.into_iter().map(|(start, end)| &text[start..end]).collect()
+}
+
+/// The activity log's fixed height; new entries scroll inside it.
+const LOG_HEIGHT: f32 = 200.;
+
+/// Lines a long log entry, such as a terminal snapshot, shows from its end.
+/// The terminal itself keeps the full history.
+const LOG_ENTRY_LINES: usize = 80;
+
+/// An entry as the log shows it: the first line (its label), then at most the
+/// last `LOG_ENTRY_LINES` lines.
+pub fn log_display(entry: &str) -> Cow<'_, str> {
+    let Some((label, body)) = entry.split_once('\n') else { return entry.into() };
+    let lines = body.matches('\n').count() + 1;
+    if lines <= LOG_ENTRY_LINES {
+        return entry.into();
+    }
+    let start = body.rmatch_indices('\n').nth(LOG_ENTRY_LINES - 1).map_or(0, |(index, _)| index + 1);
+    format!("{label}\n…（已省略前 {} 行）\n{}", lines - LOG_ENTRY_LINES, &body[start..]).into()
+}
+
+/// Entries are separated by a blank line, carried by each later entry's first run.
+fn log_runs(entry: &str, first: bool) -> Vec<SharedString> {
+    let text = log_display(entry);
+    let gap = if first { "" } else { "\n" };
+    selectable_runs(&text)
+        .into_iter()
+        .enumerate()
+        .map(|(i, run)| if i == 0 { format!("{gap}{run}") } else { run.to_string() }.into())
+        .collect()
 }
 
 fn selectable(text: &str) -> impl Iterator<Item = SelectableText> + '_ {
@@ -448,7 +482,12 @@ impl ConversationPane {
     }
 
     fn begin_log(&mut self) -> usize {
-        self.items.push(ChatItem::Log { entries: Vec::new(), expanded: false, scroll: ScrollHandle::new() });
+        self.items.push(ChatItem::Log {
+            entries: Vec::new(),
+            runs: Vec::new(),
+            expanded: true,
+            scroll: ScrollHandle::new(),
+        });
         let index = self.items.len() - 1;
         self.last_log = Some(index);
         self.chat_scroll.scroll_to_bottom();
@@ -456,13 +495,14 @@ impl ConversationPane {
     }
 
     /// Completion is conveyed by the reply itself, not repetitive success notices.
-    fn log_to(&mut self, index: usize, text: String) {
+    pub(crate) fn log_to(&mut self, index: usize, text: String) {
         if text == TURN_DONE || text == TURN_CONTINUES {
             return;
         }
-        if let Some(ChatItem::Log { entries, expanded, scroll }) = self.items.get_mut(index) {
+        if let Some(ChatItem::Log { entries, runs, expanded, scroll }) = self.items.get_mut(index) {
             // An open log that shows its end keeps following new entries.
             let follow = *expanded && scroll.offset().y <= px(1.) - scroll.max_offset().y;
+            runs.extend(log_runs(&text, entries.is_empty()));
             entries.push(text);
             if follow {
                 scroll.scroll_to_bottom();
@@ -812,7 +852,7 @@ impl ConversationPane {
                     )
                     .into_any_element()
             }
-            ChatItem::Log { entries, expanded, scroll } => {
+            ChatItem::Log { entries, runs, expanded, scroll } => {
                 let arrow = if *expanded { "▾" } else { "▸" };
                 v_flex()
                     .w_full()
@@ -828,23 +868,53 @@ impl ConversationPane {
                         ),
                     )
                     .when(*expanded, |this| {
+                        let handle = scroll.clone();
                         this.child(
-                            v_flex()
-                                .id(("log-body", index))
+                            div()
+                                .relative()
                                 .w_full()
-                                .max_h(u(280))
-                                .overflow_y_scroll()
-                                .track_scroll(scroll)
-                                .px(u(12))
-                                .py(u(10))
+                                .h(u(LOG_HEIGHT))
                                 .rounded(u(6))
                                 .bg(color(FIELD))
                                 .border_1()
                                 .border_color(color(BORDER))
-                                .font_family(cx.theme().mono_font_family.clone())
-                                .text_size(u(12.5))
-                                .text_color(color(MUTED))
-                                .children(selectable(&entries.join("\n\n"))),
+                                .child(
+                                    v_flex()
+                                        .id(("log-body", index))
+                                        .debug_selector(move || format!("log-{index}"))
+                                        .size_full()
+                                        .overflow_y_scroll()
+                                        .track_scroll(scroll)
+                                        .px(u(12))
+                                        .py(u(10))
+                                        .font_family(cx.theme().mono_font_family.clone())
+                                        .text_size(u(12.5))
+                                        .text_color(color(MUTED))
+                                        .children(
+                                            runs.iter()
+                                                .enumerate()
+                                                .map(|(i, run)| SelectableText::new(("run", i), run.clone())),
+                                        ),
+                                )
+                                // Always shown, unlike the chat's, which fades when idle.
+                                .child(
+                                    div().absolute().inset_0().child(
+                                        Scrollbar::vertical(scroll)
+                                            .id(("log-scrollbar", index))
+                                            .mode(ScrollbarMode::Always)
+                                            .viewport_from_layout(),
+                                    ),
+                                )
+                                // The log scrolls first; at its top or bottom the chat takes over.
+                                .on_scroll(move |event: &ScrollEvent, window, cx| {
+                                    let delta = event.delta.pixel_delta(window.line_height()).y;
+                                    let offset = handle.offset().y;
+                                    let up = delta > px(0.) && offset < px(-0.5);
+                                    let down = delta < px(0.) && offset > px(0.5) - handle.max_offset().y;
+                                    if up || down {
+                                        cx.stop_propagation();
+                                    }
+                                }),
                         )
                     })
                     .into_any_element()
@@ -943,7 +1013,7 @@ impl ConversationPane {
                     })
                     .child(Input::new(&self.model_input).suffix(model_menu)),
             )
-            .child(div().flex_shrink_0().child(effort_menu))
+            .child(hover_frame("effort-frame").child(effort_menu))
             .child(
                 Button::new("refresh-models")
                     .ghost()
@@ -1012,11 +1082,13 @@ impl ConversationPane {
                     .gap(u(8))
                     .when(recovery, |this| {
                         this.child(
-                            Button::new("recover")
-                                .outline()
-                                .small()
-                                .label("重试回译")
-                                .on_click(cx.listener(|this, _, _, cx| this.collect(cx))),
+                            hover_frame("recover-frame").child(
+                                Button::new("recover")
+                                    .outline()
+                                    .small()
+                                    .label("重试回译")
+                                    .on_click(cx.listener(|this, _, _, cx| this.collect(cx))),
+                            ),
                         )
                     })
                     .child(
@@ -1075,6 +1147,21 @@ impl Render for ConversationPane {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_log_entries_show_their_label_and_last_lines() {
+        let body: String = (1..=500).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let entry = format!("终端原始内容：\n{body}");
+        let shown = log_display(&entry);
+        let lines: Vec<&str> = shown.split('\n').collect();
+        assert_eq!(lines[..2], ["终端原始内容：", "…（已省略前 420 行）"]);
+        assert_eq!((lines.len(), lines[2], *lines.last().unwrap()), (LOG_ENTRY_LINES + 2, "line 421", "line 500"));
+        for short in ["已发送到 t3，等待回复…", "英文译文：\nHello\nWorld"] {
+            assert!(matches!(log_display(short), Cow::Borrowed(text) if text == short));
+        }
+        let runs = log_runs("英文译文：\nHello", false);
+        assert_eq!(runs.concat(), "\n英文译文：\nHello");
+    }
 
     #[test]
     fn runs_split_at_line_breaks_and_rejoin_exactly() {
