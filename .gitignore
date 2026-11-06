@@ -1,0 +1,33 @@
+# Local settings, drafts and credentials
+.preferences.json
+preferences.json
+*.local.json
+.env
+.env.*
+!.env.example
+.codex/
+.publish-*
+
+# Python caches and environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+.deps/
+
+# Generated files, installer logs and backups
+*.log
+*.bak
+.backup-*/
+backups/
+*.zip
+build/
+dist/
+mod/gpui-kit.d.ts
+mod/jsconfig.json
+
+# Desktop metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
