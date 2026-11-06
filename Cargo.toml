@@ -1,0 +1,34 @@
+[package]
+name = "herdr-zh-bridge"
+version = "0.8.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Chinese ↔ English translation companion for existing LLM CLI sessions in Herdr"
+license = "MIT"
+authors = ["Yvmeng Wang"]
+repository = "https://github.com/soqt/herdr-zh-bridge"
+
+[[bin]]
+name = "herdr-zh-bridge"
+path = "src/main.rs"
+
+[dependencies]
+gpui = { package = "gpui-pre", version = "=0.3.11" }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11", features = ["font-kit", "runtime_shaders"] }
+gpui-component = "0.9.0"
+gpui-base = "0.9.0"
+gpui-kit-assets = "0.9.0"
+async-channel = "2.5"
+indexmap = "2"
+regex = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
+tempfile = "3"
+
+[dev-dependencies]
+gpui = { package = "gpui-pre", version = "=0.3.11", features = ["test-support"] }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11", features = ["font-kit", "runtime_shaders", "test-support"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = true

@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS (Apple silicon)
+            os: macos-latest
+            binary: herdr-zh-bridge
+            package: herdr-zh-bridge-macos-arm64
+          - name: Windows (x64)
+            os: windows-latest
+            binary: herdr-zh-bridge.exe
+            package: herdr-zh-bridge-windows-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      # rust-toolchain.toml selects the compiler; rustup installs it on first use.
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --check
+      - name: Lint
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Test
+        run: cargo test --locked
+      - name: Installer scripts
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./test-installer.ps1
+      - name: Release build
+        run: cargo build --release --locked
+      - name: Package
+        shell: bash
+        run: |
+          out="dist/${{ matrix.package }}"
+          mkdir -p "$out/mod"
+          cp "target/release/${{ matrix.binary }}" "$out/"
+          cp mod/main.js mod/mod.json "$out/mod/"
+          cp README.md LICENSE "$out/"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cp install.ps1 update.ps1 "$out/"
+          else
+            cp install-macos.command "$out/"
+            chmod +x "$out/install-macos.command" "$out/${{ matrix.binary }}"
+          fi
+          "$out/${{ matrix.binary }}" --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.package }}
+          path: dist/${{ matrix.package }}

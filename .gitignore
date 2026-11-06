@@ -8,14 +8,6 @@ preferences.json
 .codex/
 .publish-*
 
-# Python caches and environments
-__pycache__/
-*.py[cod]
-.pytest_cache/
-.venv/
-venv/
-.deps/
-
 # Generated files, installer logs and backups
 *.log
 *.bak
@@ -31,3 +23,6 @@ mod/jsconfig.json
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Rust build output
+target/
